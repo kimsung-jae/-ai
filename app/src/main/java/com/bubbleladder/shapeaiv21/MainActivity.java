@@ -1,4 +1,4 @@
-package com.bubbleladder.shapeaiv2;
+package com.bubbleladder.shapeaiv21;
 
 import android.Manifest;
 import android.app.*;
@@ -21,16 +21,26 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity{
     private static final int REQ_EXPORT=6201,REQ_IMPORT=6202,REQ_NOTI=6203;
     private final Handler h=new Handler(Looper.getMainLooper()); private final ExecutorService ex=Executors.newSingleThreadExecutor();
+    private boolean suppressAutoToggle=false, pendingAutoStart=false, destroyed=false;
     private TextView countdown,bgState,status,nextRound,bestPick,bestConf,dimSummary,patternDetail,backtest,live,profit,recent;
     private EditText stake,odds; private CheckBox background; private Button refresh,saveSetting,backup,restore,resetStats,resetAll;
     private final BroadcastReceiver receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){reloadAsync();}};
     private final Runnable countdownTask=new Runnable(){@Override public void run(){if(countdown!=null)countdown.setText(FlowCore.countdownText());h.postDelayed(this,1000L);}};
 
-    @Override public void onCreate(Bundle b){super.onCreate(b);setContentView(buildUi());loadSettings();bindActions();registerUpdates();requestNotificationPermissionIfNeeded();h.post(countdownTask);if(FlowCore.prefs(this).getBoolean(FlowCore.K_AUTO,true))startAutoService();reloadAsync();}
+    @Override public void onCreate(Bundle b){
+        super.onCreate(b);
+        setContentView(buildUi());
+        loadSettings();
+        bindActions();
+        registerUpdates();
+        h.post(countdownTask);
+        // V2.1 안전 시작: 앱을 먼저 정상 실행하고, 백그라운드는 사용자가 직접 켠 뒤 시작한다.
+        reloadAsync();
+    }
 
     private View buildUi(){
         ScrollView sv=new ScrollView(this);sv.setFillViewport(true);LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(14),dp(16),dp(14),dp(30));root.setBackgroundColor(Color.rgb(7,19,26));sv.addView(root);
-        root.addView(tv("보글사다리 · Shape AI V2",24,Color.WHITE,true));TextView sub=tv("모양 전개 학습 · 3칸 메인 / 4칸 확인 / 5칸 보조 · 최고1픽 1개",12,Color.rgb(110,231,183),false);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
+        root.addView(tv("보글사다리 · Shape AI V2.1",24,Color.WHITE,true));TextView sub=tv("모양 전개 학습 · 3칸 메인 / 4칸 확인 / 5칸 보조 · 최고1픽 1개",12,Color.rgb(110,231,183),false);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
         LinearLayout clock=card();clock.addView(tv("다음 추첨까지",12,Color.rgb(148,163,184),false));countdown=tv("--:--",38,Color.rgb(56,189,248),true);clock.addView(countdown);bgState=tv("백그라운드 상태 확인 중",12,Color.rgb(203,213,225),false);bgState.setPadding(0,dp(4),0,0);clock.addView(bgState);root.addView(clock);
         LinearLayout ctrl=card();refresh=button("🔄 지금 수집 / 모양 AI 분석",Color.rgb(5,150,105));ctrl.addView(refresh,new LinearLayout.LayoutParams(-1,dp(54)));background=new CheckBox(this);background.setText("백그라운드 자동추첨 ON");background.setTextColor(Color.WHITE);background.setTextSize(15);background.setPadding(0,dp(8),0,0);ctrl.addView(background);status=tv("조회 준비",12,Color.rgb(203,213,225),false);status.setPadding(0,dp(6),0,0);ctrl.addView(status);root.addView(ctrl);
         LinearLayout hero=card();hero.addView(tv("다음 회차 · 최고 1픽",12,Color.GRAY,false));nextRound=tv("-",15,Color.WHITE,true);hero.addView(nextRound);bestPick=tv("분석 대기",30,Color.rgb(52,211,153),true);bestPick.setPadding(0,dp(7),0,0);hero.addView(bestPick);bestConf=tv("70% 이상일 때만 추천",15,Color.rgb(253,224,71),true);bestConf.setPadding(0,dp(4),0,0);hero.addView(bestConf);TextView note=tv("삼치기 없음 · 세 항목 중 가장 높은 1개만 표시",12,Color.rgb(110,231,183),true);note.setPadding(0,dp(10),0,0);hero.addView(note);root.addView(hero);
@@ -43,14 +53,39 @@ public class MainActivity extends Activity{
         root.addView(tv("※ 표시 %는 현재 모양과 과거 유사 모양의 순차 재현에서 계산한 신뢰도이며 실제 당첨확률을 보장하지 않습니다.",11,Color.GRAY,false));return sv;
     }
 
-    private void bindActions(){refresh.setOnClickListener(v->manualSync());saveSetting.setOnClickListener(v->saveSettings());background.setOnCheckedChangeListener((v,on)->{FlowCore.prefs(this).edit().putBoolean(FlowCore.K_AUTO,on).apply();if(on)startAutoService();else stopAutoService();updateBgState();});backup.setOnClickListener(v->startExport());restore.setOnClickListener(v->startImport());resetStats.setOnClickListener(v->confirmResetStats());resetAll.setOnClickListener(v->confirmResetAll());}
-    private void loadSettings(){android.content.SharedPreferences sp=FlowCore.prefs(this);stake.setText(String.valueOf(Math.max(5000,sp.getInt(FlowCore.K_BASE_STAKE,5000))));odds.setText(String.valueOf(sp.getFloat(FlowCore.K_ODDS,1.95f)));background.setChecked(sp.getBoolean(FlowCore.K_AUTO,true));updateBgState();}
+    private void bindActions(){
+        refresh.setOnClickListener(v->manualSync());
+        saveSetting.setOnClickListener(v->saveSettings());
+        background.setOnCheckedChangeListener((v,on)->{
+            if(suppressAutoToggle)return;
+            if(on){
+                FlowCore.prefs(this).edit().putBoolean(FlowCore.K_AUTO,true).apply();
+                if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){
+                    pendingAutoStart=true;
+                    bgState.setText("알림 권한 허용 후 자동추첨 시작");
+                    bgState.setTextColor(Color.rgb(253,224,71));
+                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},REQ_NOTI);
+                }else startAutoServiceSafely();
+            }else{
+                pendingAutoStart=false;
+                FlowCore.prefs(this).edit().putBoolean(FlowCore.K_AUTO,false).apply();
+                stopAutoServiceSafely();
+                updateBgState();
+            }
+        });
+        backup.setOnClickListener(v->startExport());restore.setOnClickListener(v->startImport());resetStats.setOnClickListener(v->confirmResetStats());resetAll.setOnClickListener(v->confirmResetAll());
+    }
+    private void loadSettings(){android.content.SharedPreferences sp=FlowCore.prefs(this);stake.setText(String.valueOf(Math.max(5000,sp.getInt(FlowCore.K_BASE_STAKE,5000))));odds.setText(String.valueOf(sp.getFloat(FlowCore.K_ODDS,1.95f)));suppressAutoToggle=true;background.setChecked(sp.getBoolean(FlowCore.K_AUTO,false));suppressAutoToggle=false;updateBgState();}
     private int readStake(){try{return Math.max(5000,Integer.parseInt(stake.getText().toString().trim()));}catch(Exception e){return 5000;}}
     private double readOdds(){try{return Math.max(1.01,Double.parseDouble(odds.getText().toString().trim()));}catch(Exception e){return 1.95;}}
     private void saveSettings(){int s=readStake();double o=readOdds();FlowCore.prefs(this).edit().putInt(FlowCore.K_BASE_STAKE,s).putFloat(FlowCore.K_ODDS,(float)o).apply();stake.setText(String.valueOf(s));Toast.makeText(this,"설정 저장 완료",Toast.LENGTH_SHORT).show();reloadAsync();}
     private void saveSettingsSilent(){FlowCore.prefs(this).edit().putInt(FlowCore.K_BASE_STAKE,readStake()).putFloat(FlowCore.K_ODDS,(float)readOdds()).apply();}
-    private void manualSync(){saveSettingsSilent();refresh.setEnabled(false);status.setText("API 수집 + Shape AI 분석 중...");ex.execute(()->{try{FlowCore.SyncResult sr=FlowCore.sync(this);h.post(()->{render(sr.analysis,sr.history);status.setText("● 완료 · "+new SimpleDateFormat("HH:mm:ss",Locale.KOREA).format(new Date()));status.setTextColor(Color.rgb(52,211,153));refresh.setEnabled(true);});}catch(Exception e){h.post(()->{status.setText("조회 실패: "+e.getMessage());status.setTextColor(Color.rgb(248,113,113));refresh.setEnabled(true);});}});}
-    private void reloadAsync(){ex.execute(()->{List<FlowCore.Result>d=FlowCore.load(this);FlowCore.Analysis a=d.isEmpty()?null:FlowCore.analyze(d);h.post(()->{if(a!=null)render(a,d);else status.setText("데이터 없음 · 지금 수집/분석을 눌러주세요.");updateBgState();});});}
+    private void manualSync(){
+        saveSettingsSilent();refresh.setEnabled(false);status.setText("API 수집 + Shape AI 분석 중...");
+        safeExecute(()->{try{FlowCore.SyncResult sr=FlowCore.sync(this);postUi(()->{render(sr.analysis,sr.history);status.setText("● 완료 · "+new SimpleDateFormat("HH:mm:ss",Locale.KOREA).format(new Date()));status.setTextColor(Color.rgb(52,211,153));refresh.setEnabled(true);});}
+            catch(Throwable e){postUi(()->{status.setText("조회 실패: "+safeMessage(e));status.setTextColor(Color.rgb(248,113,113));refresh.setEnabled(true);});}});
+    }
+    private void reloadAsync(){safeExecute(()->{try{List<FlowCore.Result>d=FlowCore.load(this);FlowCore.Analysis a=d.isEmpty()?null:FlowCore.analyze(d);postUi(()->{if(a!=null)render(a,d);else status.setText("데이터 없음 · 지금 수집/분석을 눌러주세요.");updateBgState();});}catch(Throwable e){postUi(()->{status.setText("로컬 분석 오류: "+safeMessage(e));status.setTextColor(Color.rgb(248,113,113));});}});}
 
     private void render(FlowCore.Analysis a,List<FlowCore.Result>d){if(a==null||d==null||d.isEmpty())return;FlowCore.Result last=d.get(0);nextRound.setText(last.round<480?last.date+" · "+(last.round+1)+"회":"다음날 · 1회");bestPick.setText(a.bestLabel);bestConf.setText(a.bestDim>=0?"모양 신뢰도 "+FlowCore.pct(a.bestConfidence)+" · 70% 기준 통과":"70% 기준 미달 · 이번 회차 대기");
         StringBuilder dsb=new StringBuilder();for(int i=0;i<3;i++){FlowCore.DimensionStat x=a.dims[i];dsb.append(i==0?"":"\n\n").append("● ").append(x.name).append(" → ").append(x.pick==0?"대기":FlowCore.sideLabel(x.name,x.pick)).append(" · ").append(FlowCore.pct(x.confidence)).append(x.qualified?"  ✅ 후보":"  ⏸ 대기").append("\n   ").append(x.verdict);}dimSummary.setText(dsb.toString());
@@ -59,20 +94,42 @@ public class MainActivity extends Activity{
         android.content.SharedPreferences sp=FlowCore.prefs(this);int n=sp.getInt(FlowCore.K_LIVE_TOTAL,0),hit=sp.getInt(FlowCore.K_LIVE_SUCCESS,0);double lp=Double.longBitsToDouble(sp.getLong(FlowCore.K_LIVE_PROFIT,Double.doubleToLongBits(0)));live.setText("실전 최고1픽 · "+(n>0?hit+"/"+n+" = "+FlowCore.pct((double)hit/n)+" · 누적 "+FlowCore.signed(lp):"아직 없음"));int st=Math.max(5000,sp.getInt(FlowCore.K_BASE_STAKE,5000));double o=Math.max(1.01,sp.getFloat(FlowCore.K_ODDS,1.95f));double bt=b.globalHit*st*(o-1.0)-(b.globalN-b.globalHit)*st;profit.setText("1회 배팅: "+FlowCore.money(st)+" · 배당 "+String.format(Locale.KOREA,"%.2f",o)+"\n적중 시: "+FlowCore.signed(st*(o-1.0))+" · 미적중 시: "+FlowCore.signed(-st)+"\n내부 순차재현 가상손익: "+FlowCore.signed(bt));
         List<FlowCore.Result> td=FlowCore.recentDesc(d,15);StringBuilder rr=new StringBuilder();for(int i=0;i<td.size();i++){FlowCore.Result r=td.get(i);rr.append(i==0?"최신  ":"      ").append(r.round).append("회 · ").append(FlowCore.COMBO[r.combo]);if(i<td.size()-1)rr.append("\n");}recent.setText(rr.length()==0?"결과 없음":rr.toString());}
     private String stat(int h,int n){return n==0?"픽 없음":h+"/"+n+" = "+FlowCore.pct((double)h/n);}
-    private void startAutoService(){Intent i=new Intent(this,AutoDrawService.class);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}private void stopAutoService(){stopService(new Intent(this,AutoDrawService.class));}
-    private void updateBgState(){boolean on=FlowCore.prefs(this).getBoolean(FlowCore.K_AUTO,true);if(bgState!=null){bgState.setText(on?"● 백그라운드 자동추첨 ON":"○ 백그라운드 OFF");bgState.setTextColor(on?Color.rgb(52,211,153):Color.GRAY);}}
-    private void registerUpdates(){IntentFilter f=new IntentFilter(FlowCore.ACTION_UPDATED);if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(receiver,f);}
-    private void requestNotificationPermissionIfNeeded(){if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},REQ_NOTI);}
-    private void startExport(){Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/json");i.putExtra(Intent.EXTRA_TITLE,"BubbleShapeAIV2_"+new SimpleDateFormat("yyyyMMdd_HHmm",Locale.KOREA).format(new Date())+".json");startActivityForResult(i,REQ_EXPORT);}
+    private void startAutoServiceSafely(){
+        try{
+            Intent i=new Intent(this,AutoDrawService.class);
+            if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);
+            bgState.setText("● 백그라운드 자동추첨 시작됨");bgState.setTextColor(Color.rgb(52,211,153));
+        }catch(Throwable e){
+            FlowCore.prefs(this).edit().putBoolean(FlowCore.K_AUTO,false).apply();
+            suppressAutoToggle=true;background.setChecked(false);suppressAutoToggle=false;
+            bgState.setText("자동추첨 시작 실패 · 앱은 계속 사용 가능");bgState.setTextColor(Color.rgb(248,113,113));
+            Toast.makeText(this,"백그라운드 시작 실패: "+safeMessage(e),Toast.LENGTH_LONG).show();
+        }
+    }
+    private void stopAutoServiceSafely(){try{stopService(new Intent(this,AutoDrawService.class));}catch(Throwable ignored){}}
+    private void updateBgState(){boolean on=FlowCore.prefs(this).getBoolean(FlowCore.K_AUTO,false);if(bgState!=null){bgState.setText(on?"● 백그라운드 자동추첨 ON":"○ 백그라운드 OFF · 필요할 때 직접 켜기");bgState.setTextColor(on?Color.rgb(52,211,153):Color.GRAY);}}
+    private void registerUpdates(){try{IntentFilter f=new IntentFilter(FlowCore.ACTION_UPDATED);if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(receiver,f);}catch(Throwable e){status.setText("화면 갱신 수신기 오류: "+safeMessage(e));}}
+    @Override public void onRequestPermissionsResult(int requestCode,String[] permissions,int[] grantResults){
+        super.onRequestPermissionsResult(requestCode,permissions,grantResults);
+        if(requestCode==REQ_NOTI){
+            boolean granted=grantResults.length>0&&grantResults[0]==PackageManager.PERMISSION_GRANTED;
+            if(pendingAutoStart&&granted){pendingAutoStart=false;startAutoServiceSafely();}
+            else if(pendingAutoStart){pendingAutoStart=false;FlowCore.prefs(this).edit().putBoolean(FlowCore.K_AUTO,false).apply();suppressAutoToggle=true;background.setChecked(false);suppressAutoToggle=false;bgState.setText("알림 권한이 없어 자동추첨 OFF");bgState.setTextColor(Color.rgb(248,113,113));}
+        }
+    }
+    private void safeExecute(Runnable r){try{if(!destroyed)ex.execute(r);}catch(Throwable ignored){}}
+    private void postUi(Runnable r){if(destroyed)return;h.post(()->{if(!destroyed&&!isFinishing())try{r.run();}catch(Throwable e){if(status!=null){status.setText("화면 처리 오류: "+safeMessage(e));status.setTextColor(Color.rgb(248,113,113));}}});}
+    private String safeMessage(Throwable e){String m=e==null?null:e.getMessage();return (m==null||m.trim().isEmpty())?(e==null?"알 수 없는 오류":e.getClass().getSimpleName()):m;}
+    private void startExport(){Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/json");i.putExtra(Intent.EXTRA_TITLE,"BubbleShapeAIV21_"+new SimpleDateFormat("yyyyMMdd_HHmm",Locale.KOREA).format(new Date())+".json");startActivityForResult(i,REQ_EXPORT);}
     private void startImport(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,REQ_IMPORT);}
     @Override protected void onActivityResult(int req,int res,Intent data){super.onActivityResult(req,res,data);if(res!=RESULT_OK||data==null||data.getData()==null)return;Uri u=data.getData();try{if(req==REQ_EXPORT){OutputStream o=getContentResolver().openOutputStream(u);if(o==null)throw new Exception("파일 열기 실패");o.write(FlowCore.backup(this).toString(2).getBytes("UTF-8"));o.close();Toast.makeText(this,"백업 완료",Toast.LENGTH_LONG).show();}else if(req==REQ_IMPORT){InputStream in=getContentResolver().openInputStream(u);if(in==null)throw new Exception("파일 열기 실패");BufferedReader br=new BufferedReader(new InputStreamReader(in,"UTF-8"));StringBuilder sb=new StringBuilder();String line;while((line=br.readLine())!=null)sb.append(line);br.close();FlowCore.restore(this,new JSONObject(sb.toString()));loadSettings();reloadAsync();Toast.makeText(this,"복원 완료",Toast.LENGTH_LONG).show();}}catch(Exception e){Toast.makeText(this,"처리 실패: "+e.getMessage(),Toast.LENGTH_LONG).show();}}
     private void confirmResetStats(){new AlertDialog.Builder(this).setTitle("실전성적 초기화").setMessage("승패·수익 기록만 초기화하고 학습용 Rolling 데이터는 보존합니다.").setNegativeButton("취소",null).setPositiveButton("초기화",(d,w)->{FlowCore.resetPerformance(this);Toast.makeText(this,"성적 초기화 완료",Toast.LENGTH_SHORT).show();reloadAsync();}).show();}
-    private void confirmResetAll(){new AlertDialog.Builder(this).setTitle("전체 데이터 초기화").setMessage("학습용 결과·승률·설정까지 모두 초기화합니다. 다음 자동수집부터 다시 시작합니다.").setNegativeButton("취소",null).setPositiveButton("전체 초기화",(d,w)->{FlowCore.resetAll(this);loadSettings();Toast.makeText(this,"전체 초기화 완료",Toast.LENGTH_SHORT).show();reloadAsync();}).show();}
+    private void confirmResetAll(){new AlertDialog.Builder(this).setTitle("전체 데이터 초기화").setMessage("학습용 결과·승률·설정까지 모두 초기화합니다. 초기화 후 자동추첨은 OFF 상태로 시작합니다.").setNegativeButton("취소",null).setPositiveButton("전체 초기화",(d,w)->{FlowCore.resetAll(this);loadSettings();Toast.makeText(this,"전체 초기화 완료",Toast.LENGTH_SHORT).show();reloadAsync();}).show();}
     private LinearLayout card(){LinearLayout x=new LinearLayout(this);x.setOrientation(LinearLayout.VERTICAL);x.setPadding(dp(14),dp(14),dp(14),dp(14));GradientDrawable g=new GradientDrawable();g.setColor(Color.rgb(15,30,46));g.setCornerRadius(dp(18));x.setBackground(g);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,0,0,dp(12));x.setLayoutParams(lp);return x;}
     private TextView section(String s){TextView v=tv(s,16,Color.WHITE,true);v.setPadding(0,0,0,dp(10));return v;}
     private TextView tv(String s,int size,int color,boolean bold){TextView v=new TextView(this);v.setText(s);v.setTextSize(size);v.setTextColor(color);if(bold)v.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return v;}
     private Button button(String s,int color){Button b=new Button(this);b.setText(s);b.setTextColor(Color.WHITE);b.setTextSize(14);b.setAllCaps(false);GradientDrawable g=new GradientDrawable();g.setColor(color);g.setCornerRadius(dp(12));b.setBackground(g);return b;}
     private EditText input(String s){EditText e=new EditText(this);e.setText(s);e.setTextColor(Color.WHITE);e.setHintTextColor(Color.GRAY);e.setTextSize(16);e.setPadding(dp(12),0,dp(12),0);GradientDrawable g=new GradientDrawable();g.setColor(Color.rgb(30,41,59));g.setCornerRadius(dp(12));e.setBackground(g);return e;}
     private int dp(int v){return (int)(v*getResources().getDisplayMetrics().density+.5f);}
-    @Override protected void onDestroy(){h.removeCallbacksAndMessages(null);try{unregisterReceiver(receiver);}catch(Exception ignored){}ex.shutdownNow();super.onDestroy();}
+    @Override protected void onDestroy(){destroyed=true;h.removeCallbacksAndMessages(null);try{unregisterReceiver(receiver);}catch(Throwable ignored){}try{ex.shutdownNow();}catch(Throwable ignored){}super.onDestroy();}
 }

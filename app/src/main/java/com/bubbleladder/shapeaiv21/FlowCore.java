@@ -1,4 +1,4 @@
-package com.bubbleladder.shapeaiv2;
+package com.bubbleladder.shapeaiv21;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -16,8 +16,8 @@ public final class FlowCore {
     private FlowCore(){}
 
     public static final String API="https://api.bepick.io/game/bubble_ladder3";
-    public static final String PREF="bubble_shape_ai_v2";
-    public static final String ACTION_UPDATED="com.bubbleladder.shapeaiv2.FLOW_UPDATED";
+    public static final String PREF="bubble_shape_ai_v21";
+    public static final String ACTION_UPDATED="com.bubbleladder.shapeaiv21.FLOW_UPDATED";
     public static final int WINDOW=480;
     public static final double PICK_THRESHOLD=0.70;
 
@@ -80,7 +80,7 @@ public final class FlowCore {
     public static List<Result> fetch() throws Exception{
         HttpURLConnection c=(HttpURLConnection)new URL(API).openConnection();
         c.setRequestMethod("GET"); c.setConnectTimeout(12000); c.setReadTimeout(12000); c.setUseCaches(false);
-        c.setRequestProperty("Accept","application/json"); c.setRequestProperty("User-Agent","BubbleShapeAI/2.0");
+        c.setRequestProperty("Accept","application/json"); c.setRequestProperty("User-Agent","BubbleShapeAI/2.1");
         int code=c.getResponseCode(); if(code<200||code>=300)throw new Exception("API HTTP "+code);
         BufferedReader br=new BufferedReader(new InputStreamReader(c.getInputStream(),"UTF-8"));
         StringBuilder sb=new StringBuilder(); String line; while((line=br.readLine())!=null)sb.append(line); br.close(); c.disconnect();
@@ -241,20 +241,20 @@ public final class FlowCore {
         prefs(c).edit().remove(K_RECORDS).remove(K_PENDING_IDX).remove(K_PENDING_DIM).remove(K_PENDING_PICK).remove(K_PENDING_CONF)
                 .remove(K_PENDING_STAKE).remove(K_PENDING_ODDS).remove(K_LIVE_TOTAL).remove(K_LIVE_SUCCESS).remove(K_LIVE_PROFIT).apply();
     }
-    public static void resetAll(Context c){ prefs(c).edit().clear().putBoolean(K_AUTO,true).putInt(K_BASE_STAKE,5000).putFloat(K_ODDS,1.95f).apply(); }
+    public static void resetAll(Context c){ prefs(c).edit().clear().putBoolean(K_AUTO,false).putInt(K_BASE_STAKE,5000).putFloat(K_ODDS,1.95f).apply(); }
 
     public static JSONObject backup(Context c)throws Exception{
-        SharedPreferences sp=prefs(c); JSONObject root=new JSONObject(); root.put("format","BubbleShapeAIV2Backup");
+        SharedPreferences sp=prefs(c); JSONObject root=new JSONObject(); root.put("format","BubbleShapeAIV21Backup");
         root.put("history",new JSONArray(sp.getString(K_HISTORY,"[]"))); root.put("records",new JSONArray(sp.getString(K_RECORDS,"[]")));
         JSONObject st=new JSONObject(); st.put("liveTotal",sp.getInt(K_LIVE_TOTAL,0));st.put("liveHit",sp.getInt(K_LIVE_SUCCESS,0));st.put("liveProfit",sp.getLong(K_LIVE_PROFIT,Double.doubleToLongBits(0)));
-        st.put("stake",sp.getInt(K_BASE_STAKE,5000));st.put("odds",sp.getFloat(K_ODDS,1.95f));st.put("auto",sp.getBoolean(K_AUTO,true));root.put("state",st); return root;
+        st.put("stake",sp.getInt(K_BASE_STAKE,5000));st.put("odds",sp.getFloat(K_ODDS,1.95f));st.put("auto",sp.getBoolean(K_AUTO,false));root.put("state",st); return root;
     }
     public static void restore(Context c,JSONObject root)throws Exception{
         SharedPreferences.Editor ed=prefs(c).edit(); JSONArray src=root.optJSONArray("history");
         if(src!=null){ TreeMap<Long,JSONObject> map=new TreeMap<>(Collections.reverseOrder()); for(int i=0;i<src.length();i++){JSONObject o=src.optJSONObject(i);if(o!=null){long idx=o.optLong("i",o.optLong("idx",0));if(idx>0)map.put(idx,o);}}
             JSONArray cut=new JSONArray();int n=0;for(JSONObject o:map.values()){if(n++>=WINDOW)break;cut.put(o);}ed.putString(K_HISTORY,cut.toString()); }
         if(root.has("records"))ed.putString(K_RECORDS,root.getJSONArray("records").toString()); JSONObject st=root.optJSONObject("state");
-        if(st!=null){ed.putInt(K_LIVE_TOTAL,st.optInt("liveTotal",0));ed.putInt(K_LIVE_SUCCESS,st.optInt("liveHit",0));ed.putLong(K_LIVE_PROFIT,st.optLong("liveProfit",Double.doubleToLongBits(0)));ed.putInt(K_BASE_STAKE,Math.max(5000,st.optInt("stake",5000)));ed.putFloat(K_ODDS,(float)st.optDouble("odds",1.95));ed.putBoolean(K_AUTO,st.optBoolean("auto",true));}
+        if(st!=null){ed.putInt(K_LIVE_TOTAL,st.optInt("liveTotal",0));ed.putInt(K_LIVE_SUCCESS,st.optInt("liveHit",0));ed.putLong(K_LIVE_PROFIT,st.optLong("liveProfit",Double.doubleToLongBits(0)));ed.putInt(K_BASE_STAKE,Math.max(5000,st.optInt("stake",5000)));ed.putFloat(K_ODDS,(float)st.optDouble("odds",1.95));ed.putBoolean(K_AUTO,false);}
         ed.apply();
     }
 
